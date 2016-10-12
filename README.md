@@ -26,17 +26,17 @@ Featuring:
 
 ;; a reaper will check the processing queue, and clean up dead events
 ;; we have it check every 10 seconds
-(queue-reaper 10000 queue)
+(queue-reaper 10 queue)
 
 ;; This starts up a worker that will wait 1 second between events, and
-;; will take at most 1 second to process the event.  If the event
+;; will take at most 10 seconds to process the event.  If the event
 ;; takes more than one second to process, it will timeout and it will
 ;; count a sa "failure" for the event.
 (queue-worker queue
   (fn [event]
     (print "Event: " event))
-  :delay 1000
-  :timeout 1000))
+  :delay 1
+  :timeout 10))
 ````
 
 ## License
