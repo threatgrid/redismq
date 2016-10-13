@@ -29,9 +29,8 @@ Featuring:
 (queue-reaper 10 queue)
 
 ;; This starts up a worker that will wait 1 second between events, and
-;; will take at most 10 seconds to process the event.  If the event
-;; takes more than one second to process, it will timeout and it will
-;; count a sa "failure" for the event.
+;; will block attempting to read an even at most 10 seconds to process
+;; the event.
 (queue-worker queue
   (fn [event]
     (print "Event: " event))
