@@ -17,12 +17,13 @@
   (atom ()))
 
 
-
-;; protocol to convert the data into a form suiable for serialization
-;; to and from JSON.
 (defprotocol Serialize
-  (deserialize [converter ext-value])
-  (serialize [converter int-value]))
+  "Protocol for converting the given data into a form suitable for
+  serialization to and from JSON."
+  (deserialize
+   [converter ext-value])
+  (serialize
+   [converter int-value]))
 
 (defonce identity-serializer
   (reify Serialize
@@ -34,12 +35,34 @@
 ;; A minimalist message queue mechanism
 
 (defn make-queue
-  "Returns a queue object, used in the rest of the MQ api."
+  "Returns a queue object, used in the rest of the MQ api.  Must be
+given a `name`, which will be the name of the Redis key where events
+are stored.  Events being procesed by a worker will go into the
+`NAME-procesing` key while being worked on, and removed when done.
+The `conn-spec` is a Carmine connection spec, a map containing
+a :host and :port key at the minimum.
+
+It also takes the following keyword arguments:
+
+  * conn-pool - if provided, a carmine connection pool to use
+
+  * max-depth - the most events that can be on the queue, drops oldest
+  event when the next event is added.
+
+  * retries - how many times to rretry processing an event.  If
+  exceeded, the event is considered failed.  Retries will only happen
+  if a reaper is running on the queue.
+
+  * serializer - an object implementing the Serializer protocol.
+
+  * save-failures - if true, the default value, failed events will be added to the `NAME-failures` key.
+
+  * failures-max-depth - like max depth, but for the `NAME-failures` key"
   ([name conn-spec]
      (make-queue name conn-spec {}))
   ([name conn-spec {:keys [conn-pool max-depth retries
-                           serializer failure-max-depth]
-                    :or {failure-max-depth 0
+                           serializer failure-max-depth save-failures]
+                    :or {save-failures true
                          retries 5
                          serializer identity-serializer}}]
      (merge {:name name
@@ -49,11 +72,11 @@
              :max-depth max-depth
              :retries retries
              :serializer serializer}
-            (when (< 0 failure-max-depth)
+            (when save-failures
               {:failure-key (str name "-failures")
                :failure-max-depth failure-max-depth}))))
 
-(defn wrap-obj
+(defn- wrap-obj
   "Prepares a data value for the queue, returning a serialized map containing:
   * :ts -- A unix timestamp
   * :id -- A UUID
@@ -65,7 +88,7 @@
       :ts (System/currentTimeMillis)
       :data data})))
 
-(defn unwrap-obj
+(defn- unwrap-obj
   "Returns a queue message, a map containing:
   * :ts -- A unix timestamp
   * :id -- A UUID
@@ -78,7 +101,7 @@
       :queue q
       :data data)))
 
-(defn enqueue-message [queue message-text]
+(defn- enqueue-message [queue message-text]
   (let [queue-key (:name queue)
         item-count (car/wcar queue
                      (car/lpush queue-key message-text))
@@ -88,12 +111,15 @@
       (car/wcar queue
         (car/ltrim queue-key 0 (dec max-depth))))))
 
-(defn enqueue [queue obj]
+(defn enqueue
+  "Puts the object on the queue."
+  [queue obj]
   (when (empty? (:name queue))
     (throw (RuntimeException. (str "Queue requires :name - " queue))))
   (enqueue-message queue (wrap-obj queue obj)))
 
 (defn current-queue
+  "Returns all the objects in the queue."
   ([queue]
      (current-queue queue -1))
   ([queue limit]
@@ -101,9 +127,11 @@
           (car/wcar queue
             (car/lrange (:name queue) 0 limit)))))
 
-(defn current-depth [queue]
+(defn current-depth
+  "Returns the number of objects in the queue"
+  [queue]
   (car/wcar queue
-    (car/llen (:name queue))))
+            (car/llen (:name queue))))
 
 (defn current-processing
   "Returns the current set of jobs being processed, in their serialized form."
@@ -113,13 +141,19 @@
      (car/wcar queue
                (car/lrange (:processing-key queue) 0 limit))))
 
-(defn failed-messages [queue]
-  (when (:failure-key queue)
-    (map #(unwrap-obj queue %)
-         (car/wcar queue
-           (car/lrange (:failure-key queue) 0 -1)))))
+(defn failed-messages
+  "Returns all of the failed objets for the queue"
+  ([queue]
+   (failed-messages queue -1))
+  ([queue limit]
+   (when (:failure-key queue)
+     (map #(unwrap-obj queue %)
+          (car/wcar queue
+                    (car/lrange (:failure-key queue) 0 limit))))))
 
-(defn flush-queue [queue]
+(defn flush-queue
+  "Removes all events from the queue, including currently processing jobs, and failures."
+  [queue]
   (car/wcar queue
     (car/del (:name queue)))
   (car/wcar queue
@@ -141,7 +175,9 @@
           (car/lrem pkey 1 raw))
         result))))
 
-(defn queue-counts [{:keys [name processing-key failure-key] :as queue}]
+(defn queue-counts
+  "Returns a map containing a summary of the queues state"
+  [{:keys [name processing-key failure-key] :as queue}]
   (let [[input processing failure] (car/wcar queue
                                              [(car/llen name)
                                               (car/llen processing-key)
@@ -176,7 +212,7 @@
 ;; ----------------------------------------
 ;; worker
 
-(defmacro with-work-body-exception-handling
+(defmacro -with-work-body-exception-handling
   "Handles exceptions for the worker body loop.
    Why? It is abstracted so that the same exception logic can be used both for,
    within the context of a specific queue-msg being handled, and also wrapped a
@@ -195,22 +231,31 @@
          (error "Error handling message" e#)
          (Thread/sleep (* 1000 (:delay @worker#)))))))
 
-(defn worker-body [queue worker handler]
+(defn- worker-body [queue worker handler]
   (let [key (:name queue)
         pkey (:processing-key queue)]
     (fn []
       (while (:running @worker)
-        (with-work-body-exception-handling worker queue
+        (-with-work-body-exception-handling worker queue
           (when-let [raw (car/wcar queue
                                    (car/brpoplpush key pkey (:timeout @worker)))]
             (when (seq raw)
               (let [queue-msg (unwrap-obj queue raw)]
-                (with-work-body-exception-handling worker queue-msg
+                (-with-work-body-exception-handling worker queue-msg
                   (handler queue-msg))
                 (car/wcar queue
                           (car/lrem pkey 1 raw))))))))))
 
 (defn queue-worker
+  "Start a queue worker, which will be added to the `queue-worker`
+  atom.  This worker will take messages off of `queue`, and call the
+  `handler` fn with them, one at a time.
+
+  * delay - how many seconds to wait after processing a message before getting the next.
+  * timeout - how long to block waiting for an event
+  * exit-on-error - If a fatal error occurs, exit.
+  * threads - how many threads to start for this worker.
+"
   [queue handler & {:keys [delay timeout exit-on-error threads]
                     :or {delay 0
                          timeout 30
@@ -234,13 +279,15 @@
     (swap! queue-workers conj worker)
     worker))
 
-(defn shutdown [worker]
+(defn- shutdown [worker]
   (swap! worker assoc :threads nil))
 
-(defn shutdown? [worker]
+(defn- shutdown? [worker]
   (empty? (:threads @worker)))
 
-(defn stop-worker [qw]
+(defn stop-worker
+  "Stop the queue worker.  Removes it from the `queue-workers` atom."
+  [qw]
   (swap! qw assoc :running false)
 
   ;; run in parallel because the .joins can take a long time
@@ -288,11 +335,11 @@
 ;; ----------------------------------------
 ;; reaper
 
-(defn delete-active-message [queue message-text]
+(defn- delete-active-message [queue message-text]
   (= 1 (car/wcar queue
          (car/lrem (:processing-key queue) 1 message-text))))
 
-(defn fail-or-discard-message [queue message-text]
+(defn- fail-or-discard-message [queue message-text]
   (if-let [failure-key (:failure-key queue)] ; messages that will be retried
     (let [failure-count (car/wcar queue
                           (car/lpush failure-key message-text))]
@@ -301,7 +348,7 @@
           (car/wcar queue
             (car/ltrim failure-key 0 (dec failure-max-depth))))))))
 
-(defn inc-key [m k]
+(defn- inc-key [m k]
   (update m k (fnil inc 0)))
 
 (defn reap-queue [queue retry-limit old-message-set]
@@ -320,7 +367,7 @@
               (fail-or-discard-message queue dead-message))))))
     (set active-messages)))
 
-(defn reaper-body [reaper]
+(defn- reaper-body [reaper]
   (fn []
     (while (:running @reaper)
       (doseq [queue (:queues @reaper)]
@@ -334,7 +381,17 @@
              (error (str "Reaper Exception... " queue-name) e)))))
       (Thread/sleep (* 1000 (:delay @reaper))))))
 
-(defn queue-reaper [delay & qs]
+(defn queue-reaper
+  "Creates a reaper, which will chec for events that are stuck in
+  'processing' and clean them up.  It will put them back on the queue,
+  and let them be retried.  if the retry limit has been reached, it
+  will fail them.
+
+  The reaper will be added to the `queue-reapers` atom.
+  
+  While reapers are designed to behave properly if there are multiple
+  reapers working the same queue, it is discouraged."
+  [delay & qs]
   (let [reaper (atom {:type "queue-reaper"
                       :running true
                       :delay delay
@@ -348,6 +405,8 @@
     (swap! queue-reapers conj reaper)
     reaper))
 
-(defn stop-reaper [qr]
+(defn stop-reaper
+  "Stop reaper from running.  It will also be removed from the queue-reapers atom"
+  [qr]
   (swap! qr assoc :running false :thread nil)
   (swap! queue-reapers #(remove (fn [r] (= r qr)) %)))
