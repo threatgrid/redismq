@@ -62,7 +62,7 @@
           (is (deep= [1 2 3] @results))
           (is (= (current-depth q) 0) "Queue value not consumed")
           (enqueue q 4)
-          (Thread/sleep 3000)
+          (Thread/sleep 1000)
           (is (deep= [1 2 3 4] @results))
 
           (Thread/sleep 1000)
@@ -105,14 +105,6 @@
    :active (count (current-processing queue))
    :failed (count (failed-messages queue))})
 
-(deftest test-queue-constructor
-  (let [queue (make-queue "testq" (mq-conn-spec) {})]
-    (is (= (set (keys queue))
-           #{:name :processing-key :spec :pool :max-depth :retries :serializer})))
-  (let [queue (make-queue "testq" (mq-conn-spec) {:failure-max-depth 10})]
-    (is (= (set (keys queue))
-           #{:name :processing-key :spec :pool :max-depth :retries :serializer
-             :failure-key :failure-max-depth}))))
 
 (deftest test-reap-to-failure-queue
   (let [queue (make-test-queue {:failure-max-depth 10000
