@@ -37,6 +37,13 @@ Featuring:
     (print "Event: " event))
   :delay 1
   :timeout 10))
+
+;; and when you are done
+
+(stop-workers @queue-workers)
+
+(stop-reaper (first @queue-workers))
+
 ````
 
 ## License
