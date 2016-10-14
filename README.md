@@ -11,6 +11,12 @@ Featuring:
 
 ## Usage
 
+Put this in your project.cljc
+
+``` clojure
+[threatgrid/redismq "0.1.0-SNAPSHOT"]
+```
+
 ````
 ;; define our test queue
 (def queue (make-queue "test" {:host "localhost}))
