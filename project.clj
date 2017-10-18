@@ -1,4 +1,4 @@
-(defproject threatgrid/redismq "0.1.0"
+(defproject threatgrid/redismq "0.1.1-SNAPSHOT"
   :description "Redis-based message queue"
   :url "http://github.com/threatgrid/redismq"
   :license {:name "Eclipse Public License"
