@@ -12,12 +12,6 @@
 (defn make-test-queue [& [options]]
   (make-queue "testq" (mq-conn-spec) options))
 
-(defmacro with-test-queue [queue & body]
-  `(try
-     ~@body
-     (finally
-       (.close (:pool ~queue)))))
-
 (defmethod assert-expr 'deep= [msg form]
   (let [a (second form)
         b (nth form 2)]
@@ -33,72 +27,69 @@
 
 (deftest test-queues-basic
   (let [q (make-test-queue)]
-    (with-test-queue q
-      (let [em (flush-queue q)
-            sd (current-depth q)]
-        (enqueue q 1)
-        (is (= (current-depth q) 1) "Queue did not grow.")
-        (flush-queue q)
-        (is (= (current-depth q) 0) "Queue did not flush")
-        (enqueue q 1)
-        (is (= [1] (map :data (current-queue q))) "Current queue not expected..")
-        (is (= 1 (consume q :data)) "Queue value not expected")
-        (is (= (current-depth q) 0) "Queue value not consumed")))))
+    (let [em (flush-queue q)
+          sd (current-depth q)]
+      (enqueue q 1)
+      (is (= (current-depth q) 1) "Queue did not grow.")
+      (flush-queue q)
+      (is (= (current-depth q) 0) "Queue did not flush")
+      (enqueue q 1)
+      (is (= [1] (map :data (current-queue q))) "Current queue not expected..")
+      (is (= 1 (consume q :data)) "Queue value not expected")
+      (is (= (current-depth q) 0) "Queue value not consumed"))))
 
 (deftest test-queue-worker
   (let [q (make-test-queue)]
-    (with-test-queue q
-      (let [em (flush-queue q)
-            results (atom [])
-            sd (current-depth q)
-            worker (queue-worker q (fn [m]
-                                     (swap! results #(conj % (:data m))))
-                                 :timeout 10)]
-        (try
-          (enqueue q 1)
-          (enqueue q 2)
-          (enqueue q 3)
-          (Thread/sleep 1000)
-          (is (deep= [1 2 3] @results))
-          (is (= (current-depth q) 0) "Queue value not consumed")
-          (enqueue q 4)
-          (Thread/sleep 1000)
-          (is (deep= [1 2 3 4] @results))
+    (let [em (flush-queue q)
+          results (atom [])
+          sd (current-depth q)
+          worker (queue-worker q (fn [m]
+                                   (swap! results #(conj % (:data m))))
+                               :timeout 10)]
+      (try
+        (enqueue q 1)
+        (enqueue q 2)
+        (enqueue q 3)
+        (Thread/sleep 1000)
+        (is (deep= [1 2 3] @results))
+        (is (= (current-depth q) 0) "Queue value not consumed")
+        (enqueue q 4)
+        (Thread/sleep 1000)
+        (is (deep= [1 2 3 4] @results))
 
-          (Thread/sleep 1000)
-          (stop-worker worker)
-          ;; we need to sleep a bit longer than the timeout
-          ;; to make sure the thread dies
-          (Thread/sleep 3000)
-          (enqueue q 5)
-          (is (= (current-depth q) 1) "Worker did not stop.")
-          (finally (stop-worker worker) true))))))
+        (Thread/sleep 1000)
+        (stop-worker worker)
+        ;; we need to sleep a bit longer than the timeout
+        ;; to make sure the thread dies
+        (Thread/sleep 3000)
+        (enqueue q 5)
+        (is (= (current-depth q) 1) "Worker did not stop.")
+        (finally (stop-worker worker) true)))))
 
 (deftest test-queue-reaper
   (let [q (make-test-queue)]
-    (with-test-queue q
-      (let [em (flush-queue q)
-            results (atom [])
-            sd (current-depth q)
-            reaper (queue-reaper 1 q)]
-        (try
-          (enqueue q 1)
-          (enqueue q 2)
-          (enqueue q 3)
-          (Thread/sleep 1000)
-          (try (consume q (fn [v] (throw (Exception. "On Purpose."))))
-               (catch Exception e# nil))
-          (is (= [3 2] (map :data (current-queue q))) "Results not as expected.")
-          (is (= (count (current-processing q)) 1) "Processing is empty.")
+    (let [em (flush-queue q)
+          results (atom [])
+          sd (current-depth q)
+          reaper (queue-reaper 1 q)]
+      (try
+        (enqueue q 1)
+        (enqueue q 2)
+        (enqueue q 3)
+        (Thread/sleep 1000)
+        (try (consume q (fn [v] (throw (Exception. "On Purpose."))))
+             (catch Exception e# nil))
+        (is (= [3 2] (map :data (current-queue q))) "Results not as expected.")
+        (is (= (count (current-processing q)) 1) "Processing is empty.")
 
-          (Thread/sleep 3000)
-          (testing "Processing is not empty."
-            (is (deep= (count (current-processing q)) 0)))
-          (is (=  (current-depth q) 3) "Message not returned to queue")
-          (consume q identity)
-          (consume q identity)
-          (is (= (:retries (consume q identity)) 1) "Retries not iterated.")
-          (finally (stop-reaper reaper) true))))))
+        (Thread/sleep 3000)
+        (testing "Processing is not empty."
+          (is (deep= (count (current-processing q)) 0)))
+        (is (=  (current-depth q) 3) "Message not returned to queue")
+        (consume q identity)
+        (consume q identity)
+        (is (= (:retries (consume q identity)) 1) "Retries not iterated.")
+        (finally (stop-reaper reaper) true)))))
 
 (defn queue-info [queue]
   {:waiting (count (current-queue queue))
