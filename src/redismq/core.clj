@@ -1,8 +1,7 @@
 (ns redismq.core
   (:require [cheshire.core :as json]
             [clojure.tools.logging :refer [warn error fatal info]]
-            [taoensso.carmine :as car]
-            [taoensso.carmine.connections :as connections]))
+            [taoensso.carmine :as car]))
 
 ;; ----------------------------------------
 ;; queue state
@@ -67,8 +66,8 @@ It also takes the following keyword arguments:
                          serializer identity-serializer}}]
      (merge {:name name
              :processing-key (str name "-processing")
-             :spec (connections/conn-spec conn-spec)
-             :pool (or conn-pool (connections/conn-pool {}))
+             :spec conn-spec
+             :pool (or conn-pool {})
              :max-depth max-depth
              :retries retries
              :serializer serializer}
